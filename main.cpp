@@ -14,11 +14,27 @@ enum TSurroundControl
     SC_AmbientAware
 };
 
+enum TVoiceAware
+{
+    VA_Off,
+    VA_On
+};
+
+enum TVoiceAwareMode
+{
+    VAM_Low,
+    VAM_Mid,
+    VAM_High
+};
+
+template<typename T>
 struct EnumItem {
-    int enummeration;
+    T enummeration;
     const uint8_t* data;
     int size;
 };
+
+static const uint8_t jblOffHeadphones[] = {0x5, 0x5a, 0x4, 0x0, 0x1, 0x11, 0x18, 0x0};
 
 static const uint8_t jblAnsOff[] = {0x05,0x5a,0x04,0x00,0x06,0x0e,0x00,0x0b,0x01,0x00};
 static const uint8_t jblAnsOn[] = {0x05,0x5a,0x06,0x00,0x06,0x0e,0x00,0x0a,0x01,0x00};
@@ -26,15 +42,38 @@ static const uint8_t jblAnsOn[] = {0x05,0x5a,0x06,0x00,0x06,0x0e,0x00,0x0a,0x01,
 static const uint8_t jblAmbientAware[]  = {0x5, 0x5a, 0x6, 0x0, 0x6, 0xe, 0x0, 0xa, 0xa, 0x4};
 static const uint8_t jblTalkThru[] = {0x5, 0x5a, 0x6, 0x0, 0x6, 0xe, 0x0, 0xa, 0x9, 0x4};
 
-static EnumItem jblCmds[] = {
+static EnumItem<TSurroundControl> surroundCmds[] = {
     {SC_OFF, jblAnsOff, sizeof(jblAnsOff)},
     {SC_ANC, jblAnsOn, sizeof(jblAnsOn)},
     {SC_TalkThru, jblTalkThru, sizeof(jblTalkThru)},
     {SC_AmbientAware, jblAmbientAware, sizeof(jblAmbientAware)}
 };
 
-EnumItem* GetEnumItemFromList(EnumItem* list, int listSize, int enumeration)
+static const uint8_t jblVoiceAwareOff[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x0};
+static const uint8_t jblVoiceAwareOn[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x1};
+
+static EnumItem<TVoiceAware> voiceAwareCmds[] = {
+    {VA_Off, jblVoiceAwareOff, sizeof(jblVoiceAwareOff)},
+    {VA_On, jblVoiceAwareOn, sizeof(jblVoiceAwareOn)},
+};
+
+static const uint8_t jblVoiceAwareLow[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x1, 0x0};
+static const uint8_t jblVoiceAwareMid[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x2, 0x0};
+static const uint8_t jblVoiceAwareHigh[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x3, 0x0};
+
+static EnumItem<TVoiceAwareMode> voiceAwareMode[] = {
+    {VAM_Low, jblVoiceAwareLow, sizeof(jblVoiceAwareLow)},
+    {VAM_Mid, jblVoiceAwareMid, sizeof(jblVoiceAwareMid)},
+    {VAM_High, jblVoiceAwareHigh, sizeof(jblVoiceAwareHigh)}
+};
+
+//headphones asking for voice aware mode
+static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
+
+template <typename T>
+EnumItem<T>* GetEnumItemFromList(EnumItem<T>* list, int listSize, T enumeration)
 {
+    if(!list) return nullptr;
     for (int i = 0; i < listSize; i++) {
         if(list[i].enummeration == enumeration) {
             return &list[i];
@@ -43,10 +82,11 @@ EnumItem* GetEnumItemFromList(EnumItem* list, int listSize, int enumeration)
     return nullptr;
 }
 
-int GetJblSurroundCmd(TSurroundControl surround, uint8_t* cmd, int size)
+template <typename T>
+int GetJblCmd(T enumeration, EnumItem<T>* list, uint8_t* cmd, int size)
 {
-    if(!cmd) return -1;
-    auto* item = GetEnumItemFromList(jblCmds,sizeof(jblCmds),surround);
+    if(!cmd || !list) return -1;
+    auto* item = GetEnumItemFromList(list, sizeof(list),enumeration);
     if(!item || size < item->size) return -1;
     memcpy(cmd, item->data, item->size);
     return item->size;
@@ -57,8 +97,9 @@ class JBLController
 private:
     SOCKET rfcommSock;
     TSurroundControl jblSurroundControl = SC_OFF;
+    TVoiceAwareMode vaMode = VAM_Low;
     static constexpr uint16_t rfcommJblPort = 21;
-
+    static constexpr int rcvTimeout = 70;//ms
     //create socket, find jbl device, connect to port rfcommJblPort
     void initRfcomm()
     {
@@ -115,8 +156,50 @@ private:
             printf("Connection failed: %d\n", WSAGetLastError());
         }
     }
-public:
 
+    //recv with blocking maximum for rcvTimeout ms
+    int recvWithSelect(int sockfd, char* buf, size_t len) 
+    {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+
+        struct timeval tv;
+        tv.tv_sec  = rcvTimeout / 1000;
+        tv.tv_usec = (rcvTimeout % 1000) * 1000;
+
+        int ret = ::select(sockfd + 1, &readfds, nullptr, nullptr, &tv);
+
+        if (ret <= 0) return -1;          //timed out
+
+        // Сокет готов — recv вернётся немедленно
+        return recv(sockfd, buf, len, 0);
+    }
+
+    int sendVoiceAware(TVoiceAware va, TVoiceAwareMode mode)
+    {
+        constexpr int maxCmdSize = 500;
+        uint8_t data[maxCmdSize] = {0};
+        int res = GetJblCmd(va,voiceAwareCmds,data,maxCmdSize);
+        if(res <= 0) return -1;
+        res = send(rfcommSock, (const char*)data, res, 0);
+        if(res <= 0) return -1;
+        //after receiving command, headphones asking for voice aware mode.
+        while(true) {//TODO separate from send
+            memset(data,0,maxCmdSize);
+            res = recvWithSelect(rfcommSock, (char*)data, maxCmdSize);
+            if(res <= 0) return -2;
+            if(memcmp(data,jblVoiceAwareReq,sizeof(jblVoiceAwareReq)) == 0) break;
+        }
+        memset(data,0,maxCmdSize);
+        res = GetJblCmd(mode,voiceAwareMode,data,maxCmdSize);
+        if(res <= 0) return -1;
+        res = send(rfcommSock, (const char*)data, res, 0);
+        if(res > 0) return res;
+        return -1;
+    }
+
+public:
     JBLController() 
     {
         WSADATA wsaData;
@@ -136,13 +219,13 @@ public:
         initRfcomm();
     }
 
-    int SendJblCmd(TSurroundControl cmd)
+    int SendSurroundCmd(TSurroundControl cmd)
     {
         // if(jblSurroundControl == cmd) return -1;
         jblSurroundControl = cmd;
         constexpr int maxCmdSize = 500;
         uint8_t data[maxCmdSize] = {0};
-        int res = GetJblSurroundCmd(cmd,data,maxCmdSize);
+        int res = GetJblCmd(cmd,surroundCmds,data,maxCmdSize);
         if(res > 0) {
             int result = send(rfcommSock, (const char*)data, res, 0);
             if(cmd == SC_OFF) {//otherwise doesn't accept any commands after SC_OFF
@@ -153,6 +236,23 @@ public:
             return result;
         }
         return -1;
+    }
+
+    int OffVoiceAware()
+    {
+        return sendVoiceAware(VA_Off,vaMode);
+    }
+
+    int SendVoiceAware(TVoiceAwareMode mode)
+    {
+        vaMode = mode;
+        return sendVoiceAware(VA_On, mode);
+    }
+
+    int OffHeadphones()
+    {
+        int res = send(rfcommSock, (const char*)jblOffHeadphones, sizeof(jblOffHeadphones), 0);
+        return res;
     }
 };
 
@@ -168,7 +268,12 @@ public:
         printf("  2      - On ANC\n");
         printf("  3      - On TalkThru surround control mode\n");
         printf("  4      - On AmbientAware surround control mode\n");
-        printf("  C      - Reconnect to jbl device\n");
+        printf("  5      - Off voice aware\n");
+        printf("  6      - Voice aware low\n");
+        printf("  7      - Voice aware mid\n");
+        printf("  8      - Voice aware high\n");
+        printf("  C      - Off headphones\n");
+        printf("  R      - Reconnect to jbl device\n");
         printf("  H      - Show this help\n");
         printf("  Q      - Quit\n");
         printf("====================================\n");
@@ -184,22 +289,42 @@ public:
                 switch (ch) {                                 
                     case '1':
                     case '!': 
-                        jblCtl.SendJblCmd(SC_OFF);
+                        jblCtl.SendSurroundCmd(SC_OFF);
                         break;
                     case '2':
                     case '@':
-                        jblCtl.SendJblCmd(SC_ANC);
+                        jblCtl.SendSurroundCmd(SC_ANC);
                         break;
                     case '3':
                     case '#':
-                        jblCtl.SendJblCmd(SC_TalkThru);
+                        jblCtl.SendSurroundCmd(SC_TalkThru);
                         break;
                     case '4':
                     case '$':
-                        jblCtl.SendJblCmd(SC_AmbientAware);
+                        jblCtl.SendSurroundCmd(SC_AmbientAware);
+                        break;
+                    case '5':
+                    case '%':
+                        jblCtl.OffVoiceAware();
+                        break;
+                    case '6':
+                    case '^':
+                        jblCtl.SendVoiceAware(VAM_Low);
+                        break;
+                    case '7':
+                    case '&':
+                        jblCtl.SendVoiceAware(VAM_Mid);
+                        break;
+                    case '8':
+                    case '*':
+                        jblCtl.SendVoiceAware(VAM_High);
                         break;
                     case 'c':
                     case 'C':
+                        jblCtl.OffHeadphones();
+                        break;
+                    case 'r':
+                    case 'R':
                         jblCtl.Reconnect();
                         break;
                     case 'h':
