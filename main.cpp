@@ -70,11 +70,12 @@ static EnumItem<TVoiceAwareMode> voiceAwareMode[] = {
 //headphones asking for voice aware mode
 static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
 
-template <typename T>
-EnumItem<T>* GetEnumItemFromList(EnumItem<T>* list, int listSize, T enumeration)
+template <typename T, int Size>
+EnumItem<T>* GetEnumItemFromList(EnumItem<T>(&list)[Size], T enumeration)
 {
     if(!list) return nullptr;
-    for (int i = 0; i < listSize; i++) {
+    int y = Size;
+    for (int i = 0; i < Size; i++) {
         if(list[i].enummeration == enumeration) {
             return &list[i];
         }
@@ -82,11 +83,11 @@ EnumItem<T>* GetEnumItemFromList(EnumItem<T>* list, int listSize, T enumeration)
     return nullptr;
 }
 
-template <typename T>
-int GetJblCmd(T enumeration, EnumItem<T>* list, uint8_t* cmd, int size)
+template <typename T, int Size>
+int GetJblCmd(T enumeration, EnumItem<T>(&list)[Size], uint8_t* cmd, int size)
 {
     if(!cmd || !list) return -1;
-    auto* item = GetEnumItemFromList(list, sizeof(list),enumeration);
+    auto* item = GetEnumItemFromList(list,enumeration);
     if(!item || size < item->size) return -1;
     memcpy(cmd, item->data, item->size);
     return item->size;
