@@ -29,9 +29,9 @@ enum TVoiceAwareMode
 
 template<typename T>
 struct EnumItem {
-    T enummeration;
-    const uint8_t* data;
-    int size;
+    T Enummeration;
+    const uint8_t* Data;
+    int Size;
 };
 
 static const uint8_t jblOffHeadphones[] = {0x5, 0x5a, 0x4, 0x0, 0x1, 0x11, 0x18, 0x0};
@@ -70,13 +70,47 @@ static EnumItem<TVoiceAwareMode> voiceAwareMode[] = {
 //headphones asking for voice aware mode
 static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
 
+class JblBalanceCmd
+{
+public:
+    enum {
+        MinBalance = -16,
+        MaxBalance = 16,
+        CmdBaseSize = 6
+    };
+    JblBalanceCmd()
+    {
+        isOn = 0;
+        balance = 100;
+    }
+    /// @brief
+    /// @param b left/right balance [-16..16], negative for left 
+    /// @return 0 - success, -1 - error
+    int SetBalance(int b)
+    {
+        if(b > MaxBalance || b < MinBalance) {
+            return -1;
+        }
+        balance = static_cast<uint8_t>(100 + b);
+        return 0;
+    }
+    
+    void SetIsOn(bool on)
+    {
+        on ? isOn = 1 : isOn = 0;
+    }
+private:
+    const uint8_t cmdBase[CmdBaseSize] = {0x5, 0x5a, 0x4, 0x0, 0x36, 0x0};
+    uint8_t isOn;
+    uint8_t balance;
+};
+
 template <typename T, int Size>
 EnumItem<T>* GetEnumItemFromList(EnumItem<T>(&list)[Size], T enumeration)
 {
     if(!list) return nullptr;
-    int y = Size;
     for (int i = 0; i < Size; i++) {
-        if(list[i].enummeration == enumeration) {
+        if(list[i].Enummeration == enumeration) {
             return &list[i];
         }
     }
@@ -84,13 +118,13 @@ EnumItem<T>* GetEnumItemFromList(EnumItem<T>(&list)[Size], T enumeration)
 }
 
 template <typename T, int Size>
-int GetJblCmd(T enumeration, EnumItem<T>(&list)[Size], uint8_t* cmd, int size)
+int GetJblCmd(T enumeration, EnumItem<T>(&list)[Size], uint8_t* cmd, int maxCmdSize)
 {
     if(!cmd || !list) return -1;
     auto* item = GetEnumItemFromList(list,enumeration);
-    if(!item || size < item->size) return -1;
-    memcpy(cmd, item->data, item->size);
-    return item->size;
+    if(!item || maxCmdSize < item->Size) return -1;
+    memcpy(cmd, item->Data, item->Size);
+    return item->Size;
 }
 
 class JBLController
@@ -101,9 +135,11 @@ private:
     TVoiceAwareMode vaMode = VAM_Low;
     static constexpr uint16_t rfcommJblPort = 21;
     static constexpr int rcvTimeout = 70;//ms
+    JblBalanceCmd balanceCmd;
     //create socket, find jbl device, connect to port rfcommJblPort
     void initRfcomm()
     {
+        printf("Connecting to jbl headphones...\n");
         BLUETOOTH_DEVICE_SEARCH_PARAMS searchParams = {0};
         searchParams.dwSize = sizeof(searchParams);
         searchParams.fReturnConnected = TRUE;
@@ -116,7 +152,7 @@ private:
         HBLUETOOTH_DEVICE_FIND hFind = BluetoothFindFirstDevice(&searchParams, &deviceInfo);
         
         if (!hFind) {
-            printf("No Bluetooth devices found\n");
+            printf("Error no Bluetooth devices found\n");
             return;
         }
         
@@ -135,14 +171,14 @@ private:
         BluetoothFindDeviceClose(hFind);
         
         if (!deviceAddress) {
-            printf("No connected JBL device found\n");
+            printf("Error no connected JBL device found\n");
             return;
         }
         
         rfcommSock = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
         
         if (rfcommSock == INVALID_SOCKET) {
-            printf("Socket creation failed: %d\n", WSAGetLastError());
+            printf("Error socket creation failed: %d\n", WSAGetLastError());
             return;
         }
 
@@ -154,8 +190,9 @@ private:
         int result = connect(rfcommSock, (SOCKADDR*)&addr, sizeof(addr));
         
         if (result == SOCKET_ERROR && result != WSAEWOULDBLOCK) {
-            printf("Connection failed: %d\n", WSAGetLastError());
+            printf("Error connection failed: %d\n", WSAGetLastError());
         }
+        printf("Connected successfully\n");
     }
 
     //recv with blocking maximum for rcvTimeout ms
@@ -255,31 +292,134 @@ public:
         int res = send(rfcommSock, (const char*)jblOffHeadphones, sizeof(jblOffHeadphones), 0);
         return res;
     }
+
+    int SendChannelBalance(bool on, int balance = 0)
+    {
+        balanceCmd.SetIsOn(on);
+        int res = balanceCmd.SetBalance(balance);
+        if(res < 0) return res;
+        res = send(rfcommSock, (const char*)&balanceCmd, sizeof(JblBalanceCmd), 0);
+        return res;
+    }
 };
 
 class HeadsetController {
 private:
     JBLController jblCtl;
+    enum TControlResult
+    {
+        CR_Empty,
+        CR_Nan,
+        CR_OutRange,
+        CR_Valid
+    };
+
+    TControlResult controlEnter(int& control, int minim, int maxim, bool emptyIsErr = true)
+    {
+        char buf[100] = {0};
+        if (fgets(buf, sizeof(buf), stdin) == NULL || buf[0] == '\n') {
+            if(emptyIsErr) {
+                printf("Error: enter a number in [%d..%d]\n", minim, maxim);
+            }
+            return CR_Empty;
+        }
+        if (sscanf(buf, "%d", &control) != 1) {
+            printf("Error: enter a number in [%d..%d]\n", minim, maxim);
+            return CR_Nan;
+        }
+        if(control > maxim || control < minim)
+        {
+            printf("Error: enter a number in [%d..%d]\n", minim, maxim);
+            return CR_OutRange;
+        }
+        return CR_Valid;
+    }
+
+    void jblSurroundControl()
+    {
+        printf("Choose surround control mode:\
+        1 - Off surround control\
+        2 - Active noise cancellation (ANC)\
+        3 - Talk thru\
+        4 - Ambient aware\n");
+        int surroundControl = -1;
+        TControlResult res = controlEnter(surroundControl, 1, 4);
+        if(res == CR_Valid) {
+            if(jblCtl.SendSurroundCmd((TSurroundControl)(surroundControl-1)) < 0) {
+                printf("Can't send command, check if headphones is on and try \"Reconnect\"\n");
+            }else {
+                switch(surroundControl) {
+                    case 1: printf("Surround control off\n"); break;
+                    case 2: printf("ANC mode\n"); break;
+                    case 3: printf("Talk thru mode\n"); break;
+                    case 4: printf("Ambient aware mode\n"); break;
+                }
+            }
+        }
+    }
+
+    void jblVoiceAware()
+    {
+        printf("Choose voice aware mode:\
+        1 - Off voice aware\
+        2 - Low voice aware\
+        3 - Middle voice aware\
+        4 - High voice aware\n");
+        int voiceAware = -1;
+        TControlResult res = controlEnter(voiceAware, 1, 4);
+        if(res == CR_Valid) {
+            int result = voiceAware == 1 ? jblCtl.OffVoiceAware() : 
+                jblCtl.SendVoiceAware((TVoiceAwareMode)(voiceAware-2));
+            if(result < 0) {
+                printf("Can't send command, check if headphones is on and try \"Reconnect\"\n");
+            } else {
+                switch(voiceAware) {
+                    case 1: printf("Voice aware off\n"); break;
+                    case 2: printf("Low voice aware\n"); break;
+                    case 3: printf("Middle voice aware\n"); break;
+                    case 4: printf("High voice aware\n"); break;
+                }
+            }
+        }
+    }
+
+    void jblBalanceControl()
+    {
+        printf("Enter balance [-16..16] or press Enter for turn off balance feature: ");
+        int balance = 0;
+        TControlResult res = controlEnter(balance, -16, 16, false);
+        int result = -1;
+        if(res == CR_Empty) {
+            result = jblCtl.SendChannelBalance(false);
+        } else if(res == CR_Valid) {
+            result = jblCtl.SendChannelBalance(true, balance);
+        }
+        if(result < 0) {
+            printf("Can't send command, check if headphones is on and try \"Reconnect\"\n");
+        } else {
+            if(res == CR_Empty) {
+                printf("Balance feature off\n");
+            } else {
+                printf("Balance set %d\n", balance);
+            }
+        }
+    }
+
 public:    
     void ShowHelp() {
         printf("=== Bluetooth Headset Controller ===\n");
         printf("====================================\n");
         printf("Commands:\n");
-        printf("  1      - Off JBL surround control\n");
-        printf("  2      - On ANC\n");
-        printf("  3      - On TalkThru surround control mode\n");
-        printf("  4      - On AmbientAware surround control mode\n");
-        printf("  5      - Off voice aware\n");
-        printf("  6      - Voice aware low\n");
-        printf("  7      - Voice aware mid\n");
-        printf("  8      - Voice aware high\n");
+        printf("  1      - JBL surround control (noisecancelling etc.)\n");
+        printf("  2      - Voice aware strength\n");
+        printf("  3      - Left/right balance\n");
         printf("  C      - Off headphones\n");
         printf("  R      - Reconnect to jbl device\n");
         printf("  H      - Show this help\n");
         printf("  Q      - Quit\n");
         printf("====================================\n");
     }
-    
+
     void Run() {
         ShowHelp();
         
@@ -290,35 +430,15 @@ public:
                 switch (ch) {                                 
                     case '1':
                     case '!': 
-                        jblCtl.SendSurroundCmd(SC_OFF);
+                        jblSurroundControl();
                         break;
                     case '2':
                     case '@':
-                        jblCtl.SendSurroundCmd(SC_ANC);
+                        jblVoiceAware();
                         break;
                     case '3':
                     case '#':
-                        jblCtl.SendSurroundCmd(SC_TalkThru);
-                        break;
-                    case '4':
-                    case '$':
-                        jblCtl.SendSurroundCmd(SC_AmbientAware);
-                        break;
-                    case '5':
-                    case '%':
-                        jblCtl.OffVoiceAware();
-                        break;
-                    case '6':
-                    case '^':
-                        jblCtl.SendVoiceAware(VAM_Low);
-                        break;
-                    case '7':
-                    case '&':
-                        jblCtl.SendVoiceAware(VAM_Mid);
-                        break;
-                    case '8':
-                    case '*':
-                        jblCtl.SendVoiceAware(VAM_High);
+                        jblBalanceControl();
                         break;
                     case 'c':
                     case 'C':
