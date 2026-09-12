@@ -3,7 +3,6 @@
 #include <conio.h>
 #include <ws2bth.h>
 #include <bluetoothapis.h>
-#include <string_view>
 #include <string>
 
 enum TSurroundControl
@@ -79,12 +78,13 @@ public:
     enum {
         MinBalance = -16,
         MaxBalance = 16,
-        CmdBaseSize = 6
+        CmdBaseSize = 6,
+        BalanceZero = 100
     };
     JblBalanceCmd()
     {
         isOn = 0;
-        balance = 100;
+        balance = BalanceZero;
     }
     /// @brief
     /// @param b left/right balance [-16..16], negative for left 
@@ -94,7 +94,7 @@ public:
         if(b > MaxBalance || b < MinBalance) {
             return -1;
         }
-        balance = static_cast<uint8_t>(100 + b);
+        balance = static_cast<uint8_t>(BalanceZero + b);
         return 0;
     }
     
@@ -134,6 +134,7 @@ class JBLController
 {
 private:
     SOCKET rfcommSock;
+    bool socketOk = false;
     TSurroundControl jblSurroundControl = SC_OFF;
     TVoiceAwareMode vaMode = VAM_Low;
     static constexpr uint16_t rfcommJblPort = 21;
@@ -156,6 +157,7 @@ private:
         
         if (!hFind) {
             printf("Error no Bluetooth devices found\n");
+            socketOk = false;
             return;
         }
         
@@ -165,6 +167,7 @@ private:
             if (deviceInfo.fConnected) {
                 std::wstring_view wsw = deviceInfo.szName;
                 if(wsw.find(L"JBL") != std::wstring::npos) {
+                    wprintf(L"Found device %s\n", deviceInfo.szName);
                     deviceAddress = deviceInfo.Address.ullLong;
                     break;
                 }
@@ -175,6 +178,7 @@ private:
         
         if (!deviceAddress) {
             printf("Error no connected JBL device found\n");
+            socketOk = false;
             return;
         }
         
@@ -182,6 +186,7 @@ private:
         
         if (rfcommSock == INVALID_SOCKET) {
             printf("Error socket creation failed: %d\n", WSAGetLastError());
+            socketOk = false;
             return;
         }
 
@@ -194,8 +199,10 @@ private:
         
         if (result == SOCKET_ERROR && result != WSAEWOULDBLOCK) {
             printf("Error connection failed: %d\n", WSAGetLastError());
+            socketOk = false;
             return;
         }
+        socketOk = true;
         printf("Connected successfully\n");
     }
 
@@ -218,14 +225,24 @@ private:
         return recv(sockfd, buf, len, 0);
     }
 
+    int sendRfcomm(const char* data, int size)
+    {
+        int res = send(rfcommSock, (const char*)data, size, 0);
+        if(res <= 0) {
+            socketOk = false;
+            return -1;
+        }
+        return res;
+    }
+
     int sendVoiceAware(TVoiceAware va, TVoiceAwareMode mode)
     {
+        if(!socketOk) return -1;
         constexpr int maxCmdSize = 500;
         uint8_t data[maxCmdSize] = {0};
         int res = GetJblCmd(va,voiceAwareCmds,data,maxCmdSize);
         if(res <= 0) return -1;
-        res = send(rfcommSock, (const char*)data, res, 0);
-        if(res <= 0) return -1;
+        if(sendRfcomm((const char*)data, res) < 0) return -1;
         //after receiving command, headphones asking for voice aware mode.
         while(true) {//TODO separate from send
             memset(data,0,maxCmdSize);
@@ -236,8 +253,7 @@ private:
         memset(data,0,maxCmdSize);
         res = GetJblCmd(mode,voiceAwareMode,data,maxCmdSize);
         if(res <= 0) return -1;
-        res = send(rfcommSock, (const char*)data, res, 0);
-        if(res > 0) return res;
+        if(sendRfcomm((const char*)data, res) < 0) return -1;
         return -1;
     }
 
@@ -257,21 +273,25 @@ public:
 
     void Reconnect()
     {
-        closesocket(rfcommSock);
+        if(socketOk) {
+            closesocket(rfcommSock);
+        }
         initRfcomm();
     }
 
     int SendSurroundCmd(TSurroundControl cmd)
     {
-        // if(jblSurroundControl == cmd) return -1;
+        if(!socketOk) return -1;
         jblSurroundControl = cmd;
         constexpr int maxCmdSize = 500;
         uint8_t data[maxCmdSize] = {0};
         int res = GetJblCmd(cmd,surroundCmds,data,maxCmdSize);
         if(res > 0) {
-            int result = send(rfcommSock, (const char*)data, res, 0);
+            int result = sendRfcomm((const char*)data, res);
+            if(result < 0) return -1;
             if(cmd == SC_OFF) {//otherwise doesn't accept any commands after SC_OFF
                 closesocket(rfcommSock);
+                socketOk = false;
                 Sleep(50);
                 initRfcomm();
             }
@@ -293,16 +313,18 @@ public:
 
     int OffHeadphones()
     {
-        int res = send(rfcommSock, (const char*)jblOffHeadphones, sizeof(jblOffHeadphones), 0);
+        if(!socketOk) return -1;
+        int res = sendRfcomm((const char*)jblOffHeadphones, sizeof(jblOffHeadphones));
         return res;
     }
 
     int SendChannelBalance(bool on, int balance = 0)
     {
+        if(!socketOk) return -1;
         balanceCmd.SetIsOn(on);
         int res = balanceCmd.SetBalance(balance);
         if(res < 0) return res;
-        res = send(rfcommSock, (const char*)&balanceCmd, sizeof(JblBalanceCmd), 0);
+        res = sendRfcomm((const char*)jblOffHeadphones, sizeof(jblOffHeadphones));
         return res;
     }
 };
