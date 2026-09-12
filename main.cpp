@@ -34,6 +34,7 @@ struct EnumItem {
     int Size;
 };
 
+//Commands captured by recording the btsnoop_hci file while using JBL android app
 static const uint8_t jblOffHeadphones[] = {0x5, 0x5a, 0x4, 0x0, 0x1, 0x11, 0x18, 0x0};
 
 static const uint8_t jblAnsOff[] = {0x05,0x5a,0x04,0x00,0x06,0x0e,0x00,0x0b,0x01,0x00};
@@ -42,6 +43,18 @@ static const uint8_t jblAnsOn[] = {0x05,0x5a,0x06,0x00,0x06,0x0e,0x00,0x0a,0x01,
 static const uint8_t jblAmbientAware[]  = {0x5, 0x5a, 0x6, 0x0, 0x6, 0xe, 0x0, 0xa, 0xa, 0x4};
 static const uint8_t jblTalkThru[] = {0x5, 0x5a, 0x6, 0x0, 0x6, 0xe, 0x0, 0xa, 0x9, 0x4};
 
+static const uint8_t jblVoiceAwareOff[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x0};
+static const uint8_t jblVoiceAwareOn[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x1};
+
+static const uint8_t jblVoiceAwareLow[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x1, 0x0};
+static const uint8_t jblVoiceAwareMid[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x2, 0x0};
+static const uint8_t jblVoiceAwareHigh[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x3, 0x0};
+
+
+
+//headphones asking for voice aware mode
+static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
+
 static EnumItem<TSurroundControl> surroundCmds[] = {
     {SC_OFF, jblAnsOff, sizeof(jblAnsOff)},
     {SC_ANC, jblAnsOn, sizeof(jblAnsOn)},
@@ -49,26 +62,16 @@ static EnumItem<TSurroundControl> surroundCmds[] = {
     {SC_AmbientAware, jblAmbientAware, sizeof(jblAmbientAware)}
 };
 
-static const uint8_t jblVoiceAwareOff[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x0};
-static const uint8_t jblVoiceAwareOn[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 0x0, 0x1};
-
 static EnumItem<TVoiceAware> voiceAwareCmds[] = {
     {VA_Off, jblVoiceAwareOff, sizeof(jblVoiceAwareOff)},
     {VA_On, jblVoiceAwareOn, sizeof(jblVoiceAwareOn)},
 };
-
-static const uint8_t jblVoiceAwareLow[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x1, 0x0};
-static const uint8_t jblVoiceAwareMid[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x2, 0x0};
-static const uint8_t jblVoiceAwareHigh[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x3, 0x0};
 
 static EnumItem<TVoiceAwareMode> voiceAwareMode[] = {
     {VAM_Low, jblVoiceAwareLow, sizeof(jblVoiceAwareLow)},
     {VAM_Mid, jblVoiceAwareMid, sizeof(jblVoiceAwareMid)},
     {VAM_High, jblVoiceAwareHigh, sizeof(jblVoiceAwareHigh)}
 };
-
-//headphones asking for voice aware mode
-static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
 
 class JblBalanceCmd
 {
@@ -191,6 +194,7 @@ private:
         
         if (result == SOCKET_ERROR && result != WSAEWOULDBLOCK) {
             printf("Error connection failed: %d\n", WSAGetLastError());
+            return;
         }
         printf("Connected successfully\n");
     }
@@ -385,9 +389,11 @@ private:
 
     void jblBalanceControl()
     {
-        printf("Enter balance [-16..16] or press Enter for turn off balance feature: ");
+        printf("Enter balance [%d..%d] or press Enter for turn off balance feature: ",
+            JblBalanceCmd::MinBalance, JblBalanceCmd::MaxBalance);
         int balance = 0;
-        TControlResult res = controlEnter(balance, -16, 16, false);
+        TControlResult res = controlEnter(balance, JblBalanceCmd::MinBalance, 
+            JblBalanceCmd::MaxBalance, false);
         int result = -1;
         if(res == CR_Empty) {
             result = jblCtl.SendChannelBalance(false);
