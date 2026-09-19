@@ -5,12 +5,12 @@
 #include <bluetoothapis.h>
 #include <string>
 
-enum TSurroundControl
+enum TSurroundControl : uint8_t
 {
-    SC_OFF,
-    SC_ANC,
-    SC_TalkThru,
-    SC_AmbientAware
+    SC_OFF = 0,
+    SC_ANC = 1,
+    SC_TalkThru = 9,
+    SC_AmbientAware = 10
 };
 
 enum TVoiceAware
@@ -36,7 +36,7 @@ struct EnumItem {
 //Commands captured by recording the btsnoop_hci file while using JBL android app
 static const uint8_t jblOffHeadphones[] = {0x5, 0x5a, 0x4, 0x0, 0x1, 0x11, 0x18, 0x0};
 
-static const uint8_t jblAnsOff[] = {0x05,0x5a,0x04,0x00,0x06,0x0e,0x00,0x0b,0x01,0x00};
+static const uint8_t jblAnsOff[] = {0x05,0x5a,0x04,0x00,0x06,0x0e,0x00,0x0b};
 static const uint8_t jblAnsOn[] = {0x05,0x5a,0x06,0x00,0x06,0x0e,0x00,0x0a,0x01,0x00};
 
 static const uint8_t jblAmbientAware[]  = {0x5, 0x5a, 0x6, 0x0, 0x6, 0xe, 0x0, 0xa, 0xa, 0x4};
@@ -48,8 +48,6 @@ static const uint8_t jblVoiceAwareOn[] = {0x5, 0x5a, 0x5, 0x0, 0x82, 0x2c, 0x7, 
 static const uint8_t jblVoiceAwareLow[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x1, 0x0};
 static const uint8_t jblVoiceAwareMid[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x2, 0x0};
 static const uint8_t jblVoiceAwareHigh[] = {0x5, 0x5a, 0x6, 0x0, 0x82, 0x2c, 0x6, 0x0, 0x3, 0x0};
-
-
 
 //headphones asking for voice aware mode
 static const uint8_t jblVoiceAwareReq[] = {0x5, 0x5b, 0x5, 0x0, 0x82, 0x2c, 0x0, 0x7, 0x0};
@@ -71,6 +69,28 @@ static EnumItem<TVoiceAwareMode> voiceAwareMode[] = {
     {VAM_Mid, jblVoiceAwareMid, sizeof(jblVoiceAwareMid)},
     {VAM_High, jblVoiceAwareHigh, sizeof(jblVoiceAwareHigh)}
 };
+
+template <typename T, int Size>
+EnumItem<T>* GetEnumItemFromList(EnumItem<T>(&list)[Size], T enumeration)
+{
+    if(!list) return nullptr;
+    for (int i = 0; i < Size; i++) {
+        if(list[i].Enummeration == enumeration) {
+            return &list[i];
+        }
+    }
+    return nullptr;
+}
+
+template <typename T, int Size>
+int GetJblCmd(T enumeration, EnumItem<T>(&list)[Size], uint8_t* cmd, int maxCmdSize)
+{
+    if(!cmd || !list) return -1;
+    auto* item = GetEnumItemFromList(list,enumeration);
+    if(!item || maxCmdSize < item->Size) return -1;
+    memcpy(cmd, item->Data, item->Size);
+    return item->Size;
+}
 
 class JblBalanceCmd
 {
@@ -108,38 +128,44 @@ private:
     uint8_t balance;
 };
 
-template <typename T, int Size>
-EnumItem<T>* GetEnumItemFromList(EnumItem<T>(&list)[Size], T enumeration)
-{
-    if(!list) return nullptr;
-    for (int i = 0; i < Size; i++) {
-        if(list[i].Enummeration == enumeration) {
-            return &list[i];
-        }
-    }
-    return nullptr;
-}
-
-template <typename T, int Size>
-int GetJblCmd(T enumeration, EnumItem<T>(&list)[Size], uint8_t* cmd, int maxCmdSize)
-{
-    if(!cmd || !list) return -1;
-    auto* item = GetEnumItemFromList(list,enumeration);
-    if(!item || maxCmdSize < item->Size) return -1;
-    memcpy(cmd, item->Data, item->Size);
-    return item->Size;
-}
+struct SurroundCtlInfo {
+    enum {
+        BaseSize = 9,
+        CmdModeInfo = 1,
+    };
+    const uint8_t BaseInfo[BaseSize] = {0x5, 0x5c, 0x6, 0x0, 0x1, 0x9, 0x5, 0x0, 0x0};
+    TSurroundControl Mode = SC_OFF;
+};
 
 class JBLController
 {
 private:
     SOCKET rfcommSock;
     bool socketOk = false;
-    TSurroundControl jblSurroundControl = SC_OFF;
+    SurroundCtlInfo jblSurroundControl;
     TVoiceAwareMode vaMode = VAM_Low;
     static constexpr uint16_t rfcommJblPort = 21;
-    static constexpr int rcvTimeout = 70;//ms
+    static constexpr int rcvTimeout = 10;//ms
     JblBalanceCmd balanceCmd;
+    bool vaReq = false;
+    bool surroundReq = false;
+
+    void recvParams()
+    {
+        // static const char firstCmd[] = {0x5, 0x5a, 0x6, 0x0, 0x0, 0xa, 0x2, 0x10, 0xe8, 0x3};
+        // sendRfcomm(firstCmd, sizeof(firstCmd));
+        //return something like chip name
+
+        static const char askForSurroundCtl[] = {0x5, 0x5a, 0x3, 0x0, 0x6, 0x0, 0x1};
+        int res = sendRfcomm(askForSurroundCtl, sizeof(askForSurroundCtl));
+        if(res < 0) {
+            int y = 0;
+            y++;
+            return;
+        }
+        surroundReq = true;
+    }
+
     //create socket, find jbl device, connect to port rfcommJblPort
     void initRfcomm()
     {
@@ -204,25 +230,27 @@ private:
         }
         socketOk = true;
         printf("Connected successfully\n");
+
+        recvParams();
     }
 
     //recv with blocking maximum for rcvTimeout ms
-    int recvWithSelect(int sockfd, char* buf, size_t len) 
+    int recvWithSelect(char* buf, size_t len) 
     {
         fd_set readfds;
         FD_ZERO(&readfds);
-        FD_SET(sockfd, &readfds);
+        FD_SET(rfcommSock, &readfds);
 
         struct timeval tv;
         tv.tv_sec  = rcvTimeout / 1000;
         tv.tv_usec = (rcvTimeout % 1000) * 1000;
 
-        int ret = ::select(sockfd + 1, &readfds, nullptr, nullptr, &tv);
+        int ret = ::select(rfcommSock + 1, &readfds, nullptr, nullptr, &tv);
 
         if (ret <= 0) return -1;          //timed out
 
         // Сокет готов — recv вернётся немедленно
-        return recv(sockfd, buf, len, 0);
+        return recv(rfcommSock, buf, len, 0);
     }
 
     int sendRfcomm(const char* data, int size)
@@ -244,17 +272,8 @@ private:
         if(res <= 0) return -1;
         if(sendRfcomm((const char*)data, res) < 0) return -1;
         //after receiving command, headphones asking for voice aware mode.
-        while(true) {//TODO separate from send
-            memset(data,0,maxCmdSize);
-            res = recvWithSelect(rfcommSock, (char*)data, maxCmdSize);
-            if(res <= 0) return -2;
-            if(memcmp(data,jblVoiceAwareReq,sizeof(jblVoiceAwareReq)) == 0) break;
-        }
-        memset(data,0,maxCmdSize);
-        res = GetJblCmd(mode,voiceAwareMode,data,maxCmdSize);
-        if(res <= 0) return -1;
-        if(sendRfcomm((const char*)data, res) < 0) return -1;
-        return -1;
+        vaReq = true;
+        return 0;
     }
 
 public:
@@ -279,22 +298,45 @@ public:
         initRfcomm();
     }
 
+    void CheckRecv()
+    {
+        if(!socketOk) return;
+        constexpr int bufSize = 500;
+        while (true) {
+            char buf[bufSize] = {0};
+            int rcvLen = recvWithSelect(buf,bufSize);
+            if(rcvLen <= 0) break;
+            if(surroundReq && rcvLen == sizeof(SurroundCtlInfo)) {
+                if(!memcmp(buf,&jblSurroundControl,SurroundCtlInfo::BaseSize)) {
+                    jblSurroundControl.Mode = (TSurroundControl)buf[sizeof(SurroundCtlInfo)-1];
+                }
+                surroundReq = false;
+                continue;
+            }
+            if(vaReq && !memcmp(buf,jblVoiceAwareReq,sizeof(jblVoiceAwareReq))) {
+                vaReq = false;
+                uint8_t cmd[bufSize] = {0};
+                int res = GetJblCmd(vaMode,voiceAwareMode,cmd,bufSize);
+                if(res > 0) {
+                    if(sendRfcomm((const char*)cmd, res) < 0) {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+    }
+
     int SendSurroundCmd(TSurroundControl cmd)
     {
         if(!socketOk) return -1;
-        jblSurroundControl = cmd;
+        jblSurroundControl.Mode = cmd;
         constexpr int maxCmdSize = 500;
         uint8_t data[maxCmdSize] = {0};
         int res = GetJblCmd(cmd,surroundCmds,data,maxCmdSize);
         if(res > 0) {
             int result = sendRfcomm((const char*)data, res);
             if(result < 0) return -1;
-            if(cmd == SC_OFF) {//otherwise doesn't accept any commands after SC_OFF
-                closesocket(rfcommSock);
-                socketOk = false;
-                Sleep(50);
-                initRfcomm();
-            }
             return result;
         }
         return -1;
@@ -361,6 +403,16 @@ private:
         return CR_Valid;
     }
 
+    TSurroundControl numToSurroundMode(int num)
+    {
+        switch(num) {
+            case 1: return SC_OFF;
+            case 2: return SC_ANC;
+            case 3: return SC_TalkThru;
+            case 4: return SC_AmbientAware;
+        }
+    }
+
     void jblSurroundControl()
     {
         printf("Choose surround control mode:\
@@ -368,13 +420,13 @@ private:
         2 - Active noise cancellation (ANC)\
         3 - Talk thru\
         4 - Ambient aware\n");
-        int surroundControl = -1;
-        TControlResult res = controlEnter(surroundControl, 1, 4);
+        int num = -1;
+        TControlResult res = controlEnter(num, 1, 4);
         if(res == CR_Valid) {
-            if(jblCtl.SendSurroundCmd((TSurroundControl)(surroundControl-1)) < 0) {
+            if(jblCtl.SendSurroundCmd(numToSurroundMode(num)) < 0) {
                 printf("Can't send command, check if headphones is on and try \"Reconnect\"\n");
             }else {
-                switch(surroundControl) {
+                switch(num) {
                     case 1: printf("Surround control off\n"); break;
                     case 2: printf("ANC mode\n"); break;
                     case 3: printf("Talk thru mode\n"); break;
@@ -453,6 +505,7 @@ public:
         
         bool running = true;
         while (running) {
+            jblCtl.CheckRecv();
             if (_kbhit()) {
                 char ch = _getch();
                 switch (ch) {                                 
