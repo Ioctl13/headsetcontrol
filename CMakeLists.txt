@@ -9,5 +9,15 @@ elseif(CMAKE_BUILD_TYPE STREQUAL Release)
     set(CMAKE_CXX_FLAGS "/O2 /Ob2 /Oy /GS- /GL /LTCG /OPT:REF /OPT:ICF")
 endif()
 message("building with flags: ${CMAKE_CXX_FLAGS}")
-add_executable(headset_ctl main.cpp)
+
+set(SOURCES main.cpp
+    headsetcontrol.cpp
+    770nc.cpp)
+
+set(HEADERS enumitem.h
+    headsetcontrol.h
+    770nc.h)
+
+add_executable(headset_ctl ${SOURCES} ${HEADERS})
+target_include_directories(headset_ctl PUBLIC .)
 target_link_libraries(headset_ctl ws2_32.lib Bthprops.lib)
